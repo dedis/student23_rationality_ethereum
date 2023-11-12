@@ -2,6 +2,8 @@ require("dotenv").config();
 
 require("node-fetch");
 
+const { bls12_381: bls } = require('@noble/curves/bls12-381');
+
 const API_URL = process.env.API_URL
 const PRIVATE_KEY = process.env.PRIVATE_KEY
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS
@@ -50,24 +52,68 @@ const briberyContract = new ethers.Contract(
  * @returns {void}
  */
 function listenForNewColluders() {
-    briberyContract.on("NewColluder", async (validator_id) => {
-        console.log("New colluder: " + validator_id)
-        var requestURL = 'https://beaconcha.in/api/v1/validator/' + validator_id + '?apikey=' + BEACON_API_KEY;
-        const response = await fetch(requestURL);
-        const data = await response.json();
-        if (data.status == "OK") {
-            console.log("Validator info posted to contract: " + validator_id);
+    briberyContract.on("NewColluder", handleNewColluderEvent );
+}
+
+/**
+ * Fetches information about a validator from the Beaconcha.in API.
+ * @param {string} validator_id - The ID of the validator to fetch information for.
+ * @returns {Promise<Object>} - A Promise that resolves to an object containing the validator's information.
+ */
+async function fetchValidatorInfo(validator_id) {
+    var requestURL = 'https://beaconcha.in/api/v1/validator/' + validator_id + '?apikey=' + BEACON_API_KEY;
+    const response = await fetch(requestURL);
+    const data = await response.json();
+    return data;
+}
+
+/**
+ * Handles a new colluder event by verifying the signature and posting validator info to the bribery contract.
+ * @param {string} validator_id - The ID of the colluding validator.
+ * @param {string} signature - The signature of the message.
+ * @param {string} message - The message to be signed.
+ * @returns {Promise<void>} - A Promise that resolves when the validator info has been posted to the contract.
+ */
+async function handleNewColluderEvent(validator_id, signature, message) {
+    console.log("New colluder: " + validator_id + "\nMessage to be signed: " + message + "\nSignature: " + signature);
+    const data = await fetchValidatorInfo(validator_id);
+    if (data.status == "OK") {
+        if (signatureIsValid(getHexValue(signature), getHexValue(message), getHexValue(data.data.pubkey))) {
             briberyContract.postValidatorInfo(validator_id, data.data.pubkey, data.data.effectivebalance, data.data.status)
+            console.log("Validator info posted to contract: " + validator_id);
         } else {
-            console.log("Error: " + data.status);
+            console.log("Signature is not valid!");
         }
+    } else {
+        console.log("Error: " + data.status);
     }
-    );
+}
+
+/**
+ * Checks if a given signature is valid for a given message and public key using BLS verification.
+ * @param {string} signature - The signature to be verified.
+ * @param {string} message - The message that was signed.
+ * @param {string} publicKey - The public key to use for verification.
+ * @returns {boolean} - True if the signature is valid, false otherwise.
+ */
+function signatureIsValid(signature, message, publicKey) {
+    // the following line is used for testing purposes only
+    // publicKey = bls.getPublicKey(getHexValue(PRIVATE_KEY));
+    return bls.verify(signature, message, publicKey);
+}
+
+const isHexadecimal = str => str.split('').every(c => '0123456789ABCDEFabcdef'.indexOf(c) !== -1);
+
+function getHexValue(hexString) {
+    if (hexString.slice(0, 2) != "0x" || !isHexadecimal(hexString.slice(2))) {
+        throw new Error("Invalid hex string");
+    }
+    return hexString.slice(2);
 }
 
 async function main() {
     console.log("Listening for new colluders...");
-    listenForNewColluders();
+    listenForNewColluders();    
 }
 
 main()

@@ -32,13 +32,11 @@ contract Bribery {
     /**
      * @dev Struct representing a validator in the Ethereum Proof-of-Stake (PoS) blockchain.
      * @param validatorId Unique identifier for the validator.
-     * @param pubkey Public key of the validator.
      * @param effectiveBalance Effective balance of the validator.
      * @param status Status of the validator (e.g. active, inactive, slashed, etc.).
      */
     struct Validator {
         string validatorId;
-        string pubkey;
         uint effectiveBalance;
         string status;
     }
@@ -70,10 +68,18 @@ contract Bribery {
     mapping(string validatorId => Validator) public validators;
 
     /**
+     * @dev A mapping that associates a validator ID with a colluder ID.
+     * The colluder ID is an unsigned integer that represents the ID of the colluder who owns the validator.
+     */
+    mapping(string validatorId => uint colluderId) public validatorToColluder;
+
+    /**
      * @dev Emitted when a new colluder is added to the list of colluders.
      * @param validatorId The ID of the Ethereum validator associated with the colluder.
      */
-    event NewColluder(string validatorId);
+    event NewColluder(string validatorId, string signature, bytes32 message);
+
+    mapping(address => uint256) public nonces;
 
     // =========================================
     // ========= Initialisation phase ==========
@@ -102,7 +108,7 @@ contract Bribery {
      * @notice To be called by each colluder to declare their participation in the attack. Reverts if the minimum deposit amount is not met. The function adds the caller to the list of colluding nodes, records the deposit amount and the fact that the node has not received the reward yet.
      * @param _validatorId The ID of the validator associated with the colluder.
      */
-    function commit(string calldata _validatorId) public payable {
+    function commit(string calldata _validatorId, string calldata _signature) public payable {
         if (
             msg.value < minDepositAmount ||
             validatorIsOnValidatorList(_validatorId)
@@ -117,7 +123,8 @@ contract Bribery {
             false,
             false
         );
-        emit NewColluder(_validatorId);
+        validatorToColluder[_validatorId] = totalColluders;
+        emit NewColluder(_validatorId, _signature, getMessageHash(msg.sender, _validatorId));
     }
 
     /**
@@ -130,6 +137,7 @@ contract Bribery {
                 !validatorHasSufficientFunds(colluders[i].validatorId)
             ) {
                 colluders[i].isSlashed = true;
+                validatorToColluder[colluders[i].validatorId] = 0;
             } else {
                 // we put this here in case the colluder has been slashed and then becomes active again
                 colluders[i].isSlashed = false;
@@ -164,29 +172,48 @@ contract Bribery {
             keccak256(abi.encodePacked("active_online"));
     }
 
+
+    /**
+        * @dev Returns the hash of the message to be signed by the validator. To avoid replay attacks, the message includes the address of the contract, the chain ID, and a nonce. (https://programtheblockchain.com/posts/2018/02/17/signing-and-verifying-messages-in-ethereum/)
+        */
+        function getMessageHash(
+        address _signer,
+        string memory _validatorId
+    ) public view returns (bytes32) {
+        return
+            keccak256(
+                abi.encodePacked(
+                    address(this),
+                    block.chainid,
+                    _signer,
+                    nonces[_signer],
+                    _validatorId
+                )
+            );
+    }
+
+
     // ====================================================
     // ======== Functions to be used by the oracle ========
     // ====================================================
 
     /**
-     * @dev Function that the off-chain oracle script uses to post validator information.
+     * @dev Function that the off-chain oracle script uses to post validator information. Also increments the nonce of the validator to prevent replay attacks.
      * @param _validatorId The ID of the validator.
-     * @param _pubkey The public key of the validator.
      * @param _effectiveBalance The effective balance of the validator.
      * @param _status The status of the validator.
      */
     function postValidatorInfo(
         string memory _validatorId,
-        string memory _pubkey,
         uint _effectiveBalance,
         string memory _status
     ) public {
         validators[_validatorId] = Validator(
             _validatorId,
-            _pubkey,
             _effectiveBalance,
             _status
         );
+        nonces[colluders[validatorToColluder[_validatorId]].colluderAddress]++;
     }
 
     // ==================================
@@ -199,6 +226,6 @@ contract Bribery {
     function validatorIsOnValidatorList(
         string memory _validatorId
     ) public view returns (bool) {
-        return !stringIsEmpty(validators[_validatorId].pubkey);
+        return !stringIsEmpty(validators[_validatorId].status);
     }
 }

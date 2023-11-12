@@ -4,6 +4,7 @@
     "hardhat": "^2.18.3"
   },
   "dependencies": {
+    "@noble/curves": "^1.2.0",
     "dotenv": "^16.3.1",
     "ethers": "^5.7.2",
     "node-fetch": "^2.7.0"
