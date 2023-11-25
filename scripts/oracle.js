@@ -8,6 +8,7 @@ const API_URL = process.env.API_URL
 const PRIVATE_KEY = process.env.PRIVATE_KEY
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS
 const BEACON_API_KEY = process.env.BEACON_API_KEY
+const BEACON_NODE_URL = process.env.BEACON_NODE_URL
 
 /**
  * JSON object representing the compiled Bribery contract.
@@ -109,6 +110,27 @@ function getHexValue(hexString) {
         throw new Error("Invalid hex string");
     }
     return hexString.slice(2);
+}
+
+function gweiToEth(gwei) {
+    return gwei / 1000000000;
+}
+
+async function calculateTotalStakedEther() {
+    var total = 0;
+    var requestURL = BEACON_NODE_URL+ '/eth/v1/beacon/states/head/validator_balances';
+    const response = await fetch(requestURL);
+    const data = await response.json();
+    for (var i = 0; i < data.data.length; i++) {
+        total += gweiToEth(data.data[i].balance);
+    }
+    return total;
+}
+
+async function postTotalStakedEther() {
+    var total = await calculateTotalStakedEther();
+    briberyContract.updateStakedEther(total);
+    console.log("Total staked ether posted to contract: " + total);
 }
 
 async function main() {

@@ -9,6 +9,12 @@ pragma solidity ^0.8;
  */
 contract Bribery {
     /**
+     * @dev Constant representing the maximum integer value.
+     */
+    uint256 constant MAX_INT =
+        0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+
+    /**
      * @dev Set expiration time for this contract. Arbitrarily set to 42 days after deployment. In practice, it should be long enough to engage enough validators to control a significant percentage of the target blockchain stake.
      */
     uint public expirationTime = block.timestamp + 42 days;
@@ -28,6 +34,25 @@ contract Bribery {
      * @notice Private variable to store the reward amount, which will be distributed among the colluders. They should be paid more than they would earn by following the honest protocol and be compensated for the risk that they may be slashed if the attack is detected.
      */
     uint private rewardAmount;
+
+    /**
+     * @dev Public variable to store the amount of staked ether. It is set initially to MAX_INT to avoid miscalculations before the variable is updated.
+     */
+    uint public stakedEther = MAX_INT;
+
+    /**
+     * @dev The amount of staked Ether controlled by the colluding validators.
+     */
+    uint stakedEtherControlled = 0;
+
+    /**
+     * @dev The addressToCensor constant represents the Ethereum address that needs to be censored. For the purposes of this exercise, it is set to the address of my MetaMask wallet.
+     */
+    // TODO: create function only callable by the attacker to set the address to censor, so that it's not visible to everyone from the beginning.
+    address constant addressToCensor =
+        0x707Ec32887AE799A627c960f97Ad78515B30EAe4;
+
+    bool attackHasBegun = false;
 
     /**
      * @dev Struct representing a validator in the Ethereum Proof-of-Stake (PoS) blockchain.
@@ -79,6 +104,12 @@ contract Bribery {
      */
     event NewColluder(string validatorId, string signature, bytes32 message);
 
+    /**
+     * @dev Emitted when the colluding validators control a sufficient percentage of the stake to successfully execute the attack. This event should be picked up by the colluders, who would then begin to censor the target address from any transactions.
+     * @param addressToCensor The address that is being targeted for censorship.
+     */
+    event BeginAttack(address addressToCensor);
+
     mapping(address => uint256) public nonces;
 
     // =========================================
@@ -108,10 +139,14 @@ contract Bribery {
      * @notice To be called by each colluder to declare their participation in the attack. Reverts if the minimum deposit amount is not met. The function adds the caller to the list of colluding nodes, records the deposit amount and the fact that the node has not received the reward yet.
      * @param _validatorId The ID of the validator associated with the colluder.
      */
-    function commit(string calldata _validatorId, string calldata _signature) public payable {
+    function commit(
+        string calldata _validatorId,
+        string calldata _signature
+    ) public payable {
         if (
             msg.value < minDepositAmount ||
-            validatorIsOnValidatorList(_validatorId)
+            validatorIsOnValidatorList(_validatorId) ||
+            !attackHasBegun
         ) {
             revert();
         }
@@ -124,7 +159,11 @@ contract Bribery {
             false
         );
         validatorToColluder[_validatorId] = totalColluders;
-        emit NewColluder(_validatorId, _signature, getMessageHash(msg.sender, _validatorId));
+        emit NewColluder(
+            _validatorId,
+            _signature,
+            getMessageHash(msg.sender, _validatorId)
+        );
     }
 
     /**
@@ -172,11 +211,10 @@ contract Bribery {
             keccak256(abi.encodePacked("active_online"));
     }
 
-
     /**
-        * @dev Returns the hash of the message to be signed by the validator. To avoid replay attacks, the message includes the address of the contract, the chain ID, and a nonce. (https://programtheblockchain.com/posts/2018/02/17/signing-and-verifying-messages-in-ethereum/)
-        */
-        function getMessageHash(
+     * @dev Returns the hash of the message to be signed by the validator. To avoid replay attacks, the message includes the address of the contract, the chain ID, and a nonce. (https://programtheblockchain.com/posts/2018/02/17/signing-and-verifying-messages-in-ethereum/)
+     */
+    function getMessageHash(
         address _signer,
         string memory _validatorId
     ) public view returns (bytes32) {
@@ -192,6 +230,28 @@ contract Bribery {
             );
     }
 
+    // =========================================
+    // ============= Attack phase ==============
+    // =========================================
+
+    /**
+     * @dev Checks if the colluders control a sufficient percentage of the stake to successfully execute the attack.
+     * @param percentage The percentage of the stake that the colluders need to control.
+     * @return A boolean indicating whether the colluders control the required percentage of the stake.
+     */
+    function percentageOfStakedEtherControlledIs(
+        uint percentage
+    ) public view returns (bool) {
+        percentage = percentage / 100;
+        return stakedEtherControlled / stakedEther >= percentage;
+    }
+
+    function beginAttackIfPossible() public {
+        if (percentageOfStakedEtherControlledIs(66)) {
+            emit BeginAttack(addressToCensor);
+            attackHasBegun = true;
+        }
+    }
 
     // ====================================================
     // ======== Functions to be used by the oracle ========
@@ -214,6 +274,10 @@ contract Bribery {
             _status
         );
         nonces[colluders[validatorToColluder[_validatorId]].colluderAddress]++;
+    }
+
+    function updateStakedEther(uint amount) public {
+        stakedEther = amount;
     }
 
     // ==================================
