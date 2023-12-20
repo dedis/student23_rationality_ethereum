@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8;
 
+import "hardhat/console.sol";
+
 /**
  * @title Bribery
  * @dev This contract implements a bribery attack on the Ethereum Proof of Stake (PoS) blockchain.
@@ -11,19 +13,19 @@ contract Bribery {
     /**
      * @dev Constant representing the maximum integer value.
      */
-    uint256 constant MAX_INT =
+    uint256 private constant MAX_INT =
         0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
 
     /**
      * @dev Set expiration time for this contract. Arbitrarily set to 42 days after deployment. In practice, it should be long enough to engage enough validators to control a significant percentage of the target blockchain stake.
      */
-    uint public expirationTime = block.timestamp + 42 days;
+    uint private expirationTime = block.timestamp + 42 days;
 
     /**
      * @dev Set the minimum amount each colluder needs to deposit to participate in the attack. This is done to prevent the defection of colluders.
      * For the purpose of this exercise, we set the minimum deposit amount to 0 ETH.
      */
-    uint public constant minDepositAmount = 0 ether;
+    uint private depositAmount = 0 ether;
 
     /**
      * @dev Public variable that stores the total number of colluders in the contract.
@@ -33,53 +35,59 @@ contract Bribery {
     /**
      * @notice Private variable to store the reward amount, which will be distributed among the colluders. They should be paid more than they would earn by following the honest protocol and be compensated for the risk that they may be slashed if the attack is detected.
      */
-    uint private rewardAmount;
+    uint private rewardAmount = 0;
 
     /**
      * @dev Public variable to store the amount of staked ether. It is set initially to MAX_INT to avoid miscalculations before the variable is updated.
      */
-    uint public stakedEther = MAX_INT;
+    uint private stakedEtherInWei = MAX_INT;
 
     /**
-     * @dev The amount of staked Ether controlled by the colluding validators.
+     * @dev The addressToCensor constant represents the Ethereum address that the attacker requests to be censored.
      */
-    uint stakedEtherControlled = 0;
+    address private addressToCensor;
 
     /**
-     * @dev The addressToCensor constant represents the Ethereum address that needs to be censored. For the purposes of this exercise, it is set to the address of my MetaMask wallet.
+     * @dev Represents the epoch at which the censorship attack begins.
      */
-    // TODO: create function only callable by the attacker to set the address to censor, so that it's not visible to everyone from the beginning.
-    address constant addressToCensor =
-        0x707Ec32887AE799A627c960f97Ad78515B30EAe4;
+    uint private epoch;
 
-    bool attackHasBegun = false;
+    /**
+     * @dev Represents the duration of the censorship attack in epochs.
+     */
+    uint private constant attackDurationInEpochs = 42;
+
+    bool public attackHasBegun = false;
+    bool public attackSuccess = false;
 
     /**
      * @dev Struct representing a validator in the Ethereum Proof-of-Stake (PoS) blockchain.
-     * @param validatorId Unique identifier for the validator.
-     * @param effectiveBalance Effective balance of the validator.
+     * @param effectiveBalance Effective balance of the validator (in wei)
      * @param status Status of the validator (e.g. active, inactive, slashed, etc.).
+     * @param isSlashed Boolean indicating whether the validator has been slashed in this contract for misbehaviour (low balance, offline, etc.).
+     * @param hasBeenCommited Boolean indicating whether the validator has committed to the attack.
+     * @param colluderId The ID of the colluder associated with the validator.
      */
     struct Validator {
-        string validatorId;
         uint effectiveBalance;
         string status;
+        bool isSlashed;
+        bool hasBeenCommited;
+        uint colluderId;
     }
 
     /**
      * @dev Struct representing a colluder in the bribery attack.
      * @param colluderAddress The address of the colluder in the attacking blockchain.
-     * @param validatorId The ID of the Ethereum validator that the colluder controls.
+     * @param validatorIds The IDs of the validators associated with the colluder.
      * @param depositAmount The amount of deposit the colluder has made to participate in the attack.
      * @param hasBeenPaid A boolean indicating whether the colluder has been compensated for their participation in the attack.
-     * @param isSlashed A boolean indicating whether the colluder has been slashed.
      */
     struct Colluder {
         address colluderAddress;
-        string validatorId;
+        string[] validatorIds;
         uint depositAmount;
         bool hasBeenPaid;
-        bool isSlashed;
     }
 
     /**
@@ -93,10 +101,9 @@ contract Bribery {
     mapping(string validatorId => Validator) public validators;
 
     /**
-     * @dev A mapping that associates a validator ID with a colluder ID.
-     * The colluder ID is an unsigned integer that represents the ID of the colluder who owns the validator.
+     * @dev A mapping that associates an address with the colluder's address.
      */
-    mapping(string validatorId => uint colluderId) public validatorToColluder;
+    mapping(address => uint) private colluderAddressToId;
 
     /**
      * @dev Emitted when a new colluder is added to the list of colluders.
@@ -107,9 +114,18 @@ contract Bribery {
     /**
      * @dev Emitted when the colluding validators control a sufficient percentage of the stake to successfully execute the attack. This event should be picked up by the colluders, who would then begin to censor the target address from any transactions.
      * @param addressToCensor The address that is being targeted for censorship.
+     * @param startEpoch The epoch at which the censorship attack begins.
+     * @param attackDurationInEpochs The duration of the censorship attack in epochs.
      */
-    event BeginAttack(address addressToCensor);
+    event BeginAttack(
+        address addressToCensor,
+        uint startEpoch,
+        uint attackDurationInEpochs
+    );
 
+    /**
+     * @dev A mapping that stores the nonces for each colluder address.
+     */
     mapping(address => uint256) public nonces;
 
     // =========================================
@@ -136,29 +152,38 @@ contract Bribery {
     // =========================================
 
     /**
-     * @notice To be called by each colluder to declare their participation in the attack. Reverts if the minimum deposit amount is not met. The function adds the caller to the list of colluding nodes, records the deposit amount and the fact that the node has not received the reward yet.
+     * @notice To be called by each colluder to declare their participation in the attack. Reverts if the deposit amount is not met. The function adds the caller to the list of colluding nodes, records the deposit amount and the fact that the node has not received the reward yet.
      * @param _validatorId The ID of the validator associated with the colluder.
+     * @param _signature A message, produced by the getMessageHash function and signed with the private key of the validator.
      */
     function commit(
         string calldata _validatorId,
         string calldata _signature
     ) public payable {
+        require(block.timestamp < expirationTime, "Contract has expired.");
+        require(msg.value == depositAmount, "Deposit amount incorrect.");
+        require(
+            !validators[_validatorId].hasBeenCommited,
+            "Validator already committed."
+        );
+        require(!attackHasBegun, "Attack has already begun.");
+        validators[_validatorId].hasBeenCommited = true;
         if (
-            msg.value < minDepositAmount ||
-            validatorIsOnValidatorList(_validatorId) ||
-            !attackHasBegun
+            colluders[colluderAddressToId[msg.sender]].colluderAddress ==
+            address(0)
         ) {
-            revert();
+            totalColluders++;
+            colluderAddressToId[msg.sender] = totalColluders;
         }
-        totalColluders++;
-        colluders[totalColluders] = Colluder(
+        uint colluderId = colluderAddressToId[msg.sender];
+        colluders[colluderId].validatorIds.push(_validatorId);
+        colluders[colluderId] = Colluder(
             msg.sender,
-            _validatorId,
-            msg.value,
-            false,
+            colluders[colluderId].validatorIds,
+            colluders[colluderId].depositAmount + msg.value,
             false
         );
-        validatorToColluder[_validatorId] = totalColluders;
+        validators[_validatorId].colluderId = colluderId;
         emit NewColluder(
             _validatorId,
             _signature,
@@ -167,48 +192,22 @@ contract Bribery {
     }
 
     /**
-     * @dev Verify the status of validators and slash colluders whose validators are inactive or have insufficient funds.
+     * @dev Verify the status of validators and slash validators who are inactive or have insufficient funds.
      */
     function verifyValidators() public {
         for (uint i = 1; i <= totalColluders; i++) {
-            if (
-                !_validatorIsActive(colluders[i].validatorId) ||
-                !validatorHasSufficientFunds(colluders[i].validatorId)
-            ) {
-                colluders[i].isSlashed = true;
-                validatorToColluder[colluders[i].validatorId] = 0;
-            } else {
-                // we put this here in case the colluder has been slashed and then becomes active again
-                colluders[i].isSlashed = false;
+            for (uint j = 0; j < colluders[i].validatorIds.length; j++) {
+                if (
+                    !_validatorIsActive(colluders[i].validatorIds[j]) ||
+                    !_validatorHasSufficientFunds(colluders[i].validatorIds[j])
+                ) {
+                    validators[colluders[i].validatorIds[j]].isSlashed = true;
+                } else {
+                    // we put this here in case the validator has been slashed and then becomes active again
+                    validators[colluders[i].validatorIds[j]].isSlashed = false;
+                }
             }
         }
-    }
-
-    /**
-     * @dev Checks if a validator has sufficient stake to participate in the consensus protocol.
-     * @param _validatorId The ID of the validator to check.
-     * @return A boolean indicating whether the validator has sufficient funds or not.
-     */
-    function validatorHasSufficientFunds(
-        string memory _validatorId
-    ) public view returns (bool) {
-        Validator memory v = validators[_validatorId];
-        return v.effectiveBalance > 16000000000;
-    }
-
-    /**
-     * @dev Checks if a validator with the given ID is active and online.
-     * @param _validatorId The ID of the validator to check.
-     * @return A boolean indicating whether the validator is active and online.
-     */
-    function _validatorIsActive(
-        string memory _validatorId
-    ) public view returns (bool) {
-        Validator memory v = validators[_validatorId];
-        // https://ethereum.stackexchange.com/questions/30912/how-to-compare-strings-in-solidity
-        return
-            keccak256(abi.encodePacked(v.status)) ==
-            keccak256(abi.encodePacked("active_online"));
     }
 
     /**
@@ -236,20 +235,90 @@ contract Bribery {
 
     /**
      * @dev Checks if the colluders control a sufficient percentage of the stake to successfully execute the attack.
-     * @param percentage The percentage of the stake that the colluders need to control.
+     * @param _percentage The percentage of the stake that the colluders need to control.
      * @return A boolean indicating whether the colluders control the required percentage of the stake.
      */
     function percentageOfStakedEtherControlledIs(
-        uint percentage
+        uint _percentage
     ) public view returns (bool) {
-        percentage = percentage / 100;
-        return stakedEtherControlled / stakedEther >= percentage;
+        _percentage = _floatDivision(_percentage, 100, 4);
+        return
+            _floatDivision(_stakedEtherControlled(), stakedEtherInWei, 4) >=
+            _percentage;
     }
 
+    /**
+     * @dev Emits the BeginAttack event if the colluders control a sufficient percentage of the stake to successfully execute the attack.
+     */
     function beginAttackIfPossible() public {
-        if (percentageOfStakedEtherControlledIs(66)) {
-            emit BeginAttack(addressToCensor);
-            attackHasBegun = true;
+        require(!attackHasBegun, "Attack has already begun.");
+        require(block.timestamp < expirationTime, "Contract has expired.");
+        verifyValidators();
+        require(
+            percentageOfStakedEtherControlledIs(66),
+            "Not enough stake controlled."
+        );
+        require(addressToCensor != address(0), "No address to censor.");
+        require(epoch != 0, "No epoch to censor.");
+        emit BeginAttack(addressToCensor, epoch, attackDurationInEpochs);
+        attackHasBegun = true;
+    }
+
+    // ===============================================
+    // ============= Distribution phase ==============
+    // ===============================================
+
+    /**
+     * @dev Calculates the reward and deposit to be returned for a given colluder address.
+     * @param _colluderAddress The address of the colluder.
+     * @return rewardForColluder The reward amount to be given to the colluder.
+     * @return depositToBeReturned The deposit amount to be returned to the colluder.
+     */
+    function calculateReward(
+        address _colluderAddress
+    ) public view returns (uint rewardForColluder, uint depositToBeReturned) {
+        uint stakedEther = _stakedEtherControlled();
+        uint rewardPerUnitOfStake = _floatDivision(rewardAmount, stakedEther, 4);
+        uint colluderId = colluderAddressToId[_colluderAddress];
+        depositToBeReturned = colluders[colluderId].depositAmount;
+        uint stakeOfColluder = 0;
+        for (uint i = 0; i < colluders[colluderId].validatorIds.length; i++) {
+            if (!validators[colluders[colluderId].validatorIds[i]].isSlashed) {
+                stakeOfColluder += validators[
+                    colluders[colluderId].validatorIds[i]
+                ].effectiveBalance;
+            } else {
+                depositToBeReturned -= depositAmount;
+            }
+        }
+        rewardForColluder = _floatMultiplication(
+            rewardPerUnitOfStake,
+            stakeOfColluder,
+            2
+        );
+        return (rewardForColluder, depositToBeReturned);
+    }
+
+    /**
+     * @dev Called by each colluder to receive their reward and deposit back. The function reverts if the colluder has already been paid or if the attack has not been successful and the contract has expired.
+     */
+    function distribute() public payable {
+        uint colluderId = colluderAddressToId[msg.sender];
+        require(
+            colluders[colluderId].hasBeenPaid == false,
+            "Colluder has already been paid."
+        );
+        (uint rewardForColluder, uint depositToBeReturned) = calculateReward(
+            msg.sender
+        );
+        if (attackSuccess) {
+            payable(msg.sender).transfer(
+                rewardForColluder + depositToBeReturned
+            );
+            colluders[colluderId].hasBeenPaid = true;
+        } else if (block.timestamp > expirationTime && !attackSuccess) {
+            payable(msg.sender).transfer(depositToBeReturned);
+            colluders[colluderId].hasBeenPaid = true;
         }
     }
 
@@ -257,10 +326,12 @@ contract Bribery {
     // ======== Functions to be used by the oracle ========
     // ====================================================
 
+    // TODO: the following functions should be callable only by the oracle
+    // https://ethereum.stackexchange.com/questions/24222/how-can-i-restrict-a-function-to-make-it-only-callable-by-one-contract
     /**
      * @dev Function that the off-chain oracle script uses to post validator information. Also increments the nonce of the validator to prevent replay attacks.
      * @param _validatorId The ID of the validator.
-     * @param _effectiveBalance The effective balance of the validator.
+     * @param _effectiveBalance The effective balance of the validator in gwei.
      * @param _status The status of the validator.
      */
     function postValidatorInfo(
@@ -268,28 +339,147 @@ contract Bribery {
         uint _effectiveBalance,
         string memory _status
     ) public {
-        validators[_validatorId] = Validator(
-            _validatorId,
-            _effectiveBalance,
-            _status
-        );
-        nonces[colluders[validatorToColluder[_validatorId]].colluderAddress]++;
+        // We multiply by 1e9 to convert from gwei to wei
+        validators[_validatorId].effectiveBalance = _effectiveBalance * 1e9;
+        validators[_validatorId].status = _status;
+        nonces[
+            colluders[validators[_validatorId].colluderId].colluderAddress
+        ]++;
     }
 
-    function updateStakedEther(uint amount) public {
-        stakedEther = amount;
+    /**
+     * @dev Updates the amount of staked ether.
+     * @param _amount The new amount of staked ether.
+     */
+    function updateStakedEther(uint _amount) public {
+        stakedEtherInWei = _amount;
+    }
+
+    /**
+     * @dev Posts information about a bribery attack.
+     * @param _addressToCensor The address to be censored.
+     * @param _epoch The epoch at which the attack begins.
+     */
+    function postAttackInfo(address _addressToCensor, uint _epoch) public {
+        addressToCensor = _addressToCensor;
+        epoch = _epoch;
+    }
+
+    /**
+     * @dev Sets the success status of the bribery attack.
+     * @param _attackSuccess The success status of the bribery attack.
+     */
+    function postAttackSuccess(bool _attackSuccess) public {
+        require(attackHasBegun, "Attack has not begun.");
+        attackSuccess = _attackSuccess;
+    }
+
+    /**
+     * @dev Retrieves the colluding validators.
+     * @return A 2-dimensional array of strings representing the colluding validators.
+     */
+    function getColludingValidators() public view returns (string[][] memory) {
+        string[][] memory colludingValidators = new string[][](totalColluders);
+        for (uint i = 0; i < totalColluders; i++) {
+            colludingValidators[i] = colluders[i + 1].validatorIds;
+        }
+        return colludingValidators;
+    }
+
+    /**
+     * @dev Function to post and slash misbehaving validators.
+     */
+    function postAndSlashMisbehavingValidators(
+        string[] memory _misbehavingValidators
+    ) public {
+        require(attackSuccess, "Attack was not successful.");
+        for (uint i = 0; i < _misbehavingValidators.length; i++) {
+            validators[_misbehavingValidators[i]].isSlashed = true;
+        }
     }
 
     // ==================================
     // ======== Helper functions ========
     // ==================================
-    function stringIsEmpty(string memory _string) public pure returns (bool) {
-        return bytes(_string).length == 0;
+
+    /**
+     * @dev Checks if a validator has sufficient stake to participate in the consensus protocol.
+     * @param _validatorId The ID of the validator to check.
+     * @return A boolean indicating whether the validator has sufficient funds or not.
+     */
+    function _validatorHasSufficientFunds(
+        string memory _validatorId
+    ) private view returns (bool) {
+        Validator memory v = validators[_validatorId];
+        uint minimumEffectiveBalance = 16000000000000000000;
+        return v.effectiveBalance > minimumEffectiveBalance;
     }
 
-    function validatorIsOnValidatorList(
+    /**
+     * @dev Checks if a validator with the given ID is active and online.
+     * @param _validatorId The ID of the validator to check.
+     * @return A boolean indicating whether the validator is active and online.
+     */
+    function _validatorIsActive(
         string memory _validatorId
-    ) public view returns (bool) {
-        return !stringIsEmpty(validators[_validatorId].status);
+    ) private view returns (bool) {
+        Validator memory v = validators[_validatorId];
+        // https://ethereum.stackexchange.com/questions/30912/how-to-compare-strings-in-solidity
+        return
+            keccak256(abi.encodePacked(v.status)) ==
+            keccak256(abi.encodePacked("active_online"));
+    }
+
+    /**
+     * @return The amount of staked ether (in wei) controlled by the contract.
+     */
+    function _stakedEtherControlled() private view returns (uint) {
+        uint stakedEther = 0;
+        for (uint i = 1; i <= totalColluders; i++) {
+            for (uint j = 0; j < colluders[i].validatorIds.length; j++) {
+                if (!validators[colluders[i].validatorIds[j]].isSlashed) {
+                    stakedEther += validators[colluders[i].validatorIds[j]]
+                        .effectiveBalance;
+                }
+            }
+        }
+        return stakedEther;
+    }
+
+    // from https://stackoverflow.com/questions/42738640/division-in-ethereum-solidity/42739843#42739843
+    /**
+     * @dev Performs a floating-point division operation.
+     * @param _numerator The numerator of the division.
+     * @param _denominator The denominator of the division.
+     * @param _precision The precision in digits of the division.
+     * @return quotient The result of the division.
+     */
+    function _floatDivision(
+        uint _numerator,
+        uint _denominator,
+        uint _precision
+    ) private pure returns (uint quotient) {
+        // caution, check safe-to-multiply here
+        uint numerator = _numerator * 10 ** (_precision + 1);
+        // with rounding of last digit
+        uint _quotient = ((numerator / _denominator) + 5) / 10;
+        return (_quotient);
+    }
+
+    // https://ethereum.stackexchange.com/questions/41701/tfloating-point-multiplication-then-flooring-result-to-get-uint
+    /**
+     * @dev Performs floating point multiplication.
+     * @param _a The first operand.
+     * @param _b The second operand.
+     * @param _decimals The number of decimals to use.
+     * @return The result of multiplying `a` and `b`.
+     */
+    function _floatMultiplication(
+        uint _a,
+        uint _b,
+        uint _decimals
+    ) private pure returns (uint) {
+        uint result = (_a * _b) / (10 ** (_decimals ** 2));
+        return result;
     }
 }
