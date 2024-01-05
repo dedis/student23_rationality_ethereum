@@ -1,5 +1,4 @@
 const { expect } = require("chai");
-const hre = require("hardhat");
 const { loadFixture, time } = require("@nomicfoundation/hardhat-network-helpers");
 
 describe("Bribery", function () {

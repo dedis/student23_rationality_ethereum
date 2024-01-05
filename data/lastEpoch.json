@@ -1,0 +1,23 @@
+{
+    "attestationscount": 3243,
+    "attesterslashingscount": 0,
+    "averagevalidatorbalance": 32087286018,
+    "blockscount": 32,
+    "depositscount": 0,
+    "eligibleether": 28559356000000000,
+    "epoch": 251154,
+    "finalized": true,
+    "globalparticipationrate": 0.995756983757019,
+    "missedblocks": 0,
+    "orphanedblocks": 0,
+    "proposedblocks": 32,
+    "proposerslashingscount": 0,
+    "rewards_exported": false,
+    "scheduledblocks": 0,
+    "totalvalidatorbalance": 100000000000,
+    "ts": "2023-12-22T17:20:23Z",
+    "validatorscount": 892488,
+    "voluntaryexitscount": 0,
+    "votedether": 28438177000000000,
+    "withdrawalcount": 512
+  }

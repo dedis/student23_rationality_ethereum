@@ -128,6 +128,11 @@ contract Bribery {
      */
     mapping(address => uint256) public nonces;
 
+    /**
+     * @dev The address of the oracle used by the contract.
+     */
+    address oracle =     0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
+
     // =========================================
     // ========= Initialisation phase ==========
     // =========================================
@@ -251,6 +256,14 @@ contract Bribery {
      * @dev Emits the BeginAttack event if the colluders control a sufficient percentage of the stake to successfully execute the attack.
      */
     function beginAttackIfPossible() public {
+        require(attackIsReadyToBegin());
+        require(addressToCensor != address(0), "No address to censor.");
+        require(epoch != 0, "No epoch to censor.");
+        emit BeginAttack(addressToCensor, epoch, attackDurationInEpochs);
+        attackHasBegun = true;
+    }
+
+    function attackIsReadyToBegin() public returns (bool) {
         require(!attackHasBegun, "Attack has already begun.");
         require(block.timestamp < expirationTime, "Contract has expired.");
         verifyValidators();
@@ -258,10 +271,7 @@ contract Bribery {
             percentageOfStakedEtherControlledIs(66),
             "Not enough stake controlled."
         );
-        require(addressToCensor != address(0), "No address to censor.");
-        require(epoch != 0, "No epoch to censor.");
-        emit BeginAttack(addressToCensor, epoch, attackDurationInEpochs);
-        attackHasBegun = true;
+        return true;
     }
 
     // ===============================================
@@ -278,7 +288,11 @@ contract Bribery {
         address _colluderAddress
     ) public view returns (uint rewardForColluder, uint depositToBeReturned) {
         uint stakedEther = _stakedEtherControlled();
-        uint rewardPerUnitOfStake = _floatDivision(rewardAmount, stakedEther, 4);
+        uint rewardPerUnitOfStake = _floatDivision(
+            rewardAmount,
+            stakedEther,
+            4
+        );
         uint colluderId = colluderAddressToId[_colluderAddress];
         depositToBeReturned = colluders[colluderId].depositAmount;
         uint stakeOfColluder = 0;
@@ -300,7 +314,7 @@ contract Bribery {
     }
 
     /**
-     * @dev Called by each colluder to receive their reward and deposit back. The function reverts if the colluder has already been paid or if the attack has not been successful and the contract has expired.
+     * @dev Called by each colluder to receive their reward and deposit back. The function reverts if the colluder has already been paid. If the attack has not been successful and the contract has expired, the colluder can withdraw their deposit.
      */
     function distribute() public payable {
         uint colluderId = colluderAddressToId[msg.sender];
@@ -326,8 +340,6 @@ contract Bribery {
     // ======== Functions to be used by the oracle ========
     // ====================================================
 
-    // TODO: the following functions should be callable only by the oracle
-    // https://ethereum.stackexchange.com/questions/24222/how-can-i-restrict-a-function-to-make-it-only-callable-by-one-contract
     /**
      * @dev Function that the off-chain oracle script uses to post validator information. Also increments the nonce of the validator to prevent replay attacks.
      * @param _validatorId The ID of the validator.
@@ -338,7 +350,7 @@ contract Bribery {
         string memory _validatorId,
         uint _effectiveBalance,
         string memory _status
-    ) public {
+    ) public onlyOracle {
         // We multiply by 1e9 to convert from gwei to wei
         validators[_validatorId].effectiveBalance = _effectiveBalance * 1e9;
         validators[_validatorId].status = _status;
@@ -351,7 +363,7 @@ contract Bribery {
      * @dev Updates the amount of staked ether.
      * @param _amount The new amount of staked ether.
      */
-    function updateStakedEther(uint _amount) public {
+    function updateStakedEther(uint _amount) public onlyOracle {
         stakedEtherInWei = _amount;
     }
 
@@ -360,7 +372,10 @@ contract Bribery {
      * @param _addressToCensor The address to be censored.
      * @param _epoch The epoch at which the attack begins.
      */
-    function postAttackInfo(address _addressToCensor, uint _epoch) public {
+    function postAttackInfo(
+        address _addressToCensor,
+        uint _epoch
+    ) public onlyOracle {
         addressToCensor = _addressToCensor;
         epoch = _epoch;
     }
@@ -369,7 +384,7 @@ contract Bribery {
      * @dev Sets the success status of the bribery attack.
      * @param _attackSuccess The success status of the bribery attack.
      */
-    function postAttackSuccess(bool _attackSuccess) public {
+    function postAttackSuccess(bool _attackSuccess) public onlyOracle {
         require(attackHasBegun, "Attack has not begun.");
         attackSuccess = _attackSuccess;
     }
@@ -391,7 +406,7 @@ contract Bribery {
      */
     function postAndSlashMisbehavingValidators(
         string[] memory _misbehavingValidators
-    ) public {
+    ) public onlyOracle {
         require(attackSuccess, "Attack was not successful.");
         for (uint i = 0; i < _misbehavingValidators.length; i++) {
             validators[_misbehavingValidators[i]].isSlashed = true;
@@ -481,5 +496,14 @@ contract Bribery {
     ) private pure returns (uint) {
         uint result = (_a * _b) / (10 ** (_decimals ** 2));
         return result;
+    }
+
+    /**
+     * @dev Modifier that checks if the sender is the oracle.
+     * https://ethereum.stackexchange.com/questions/24222/how-can-i-restrict-a-function-to-make-it-only-callable-by-one-contract
+     */
+    modifier onlyOracle() {
+        require(msg.sender == oracle); // If it is incorrect here, it reverts.
+        _; // Otherwise, it continues.
     }
 }

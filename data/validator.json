@@ -1,0 +1,16 @@
+{
+    "activationeligibilityepoch": 0,
+    "activationepoch": 0,
+    "balance": 32057163381,
+    "effectivebalance": 32000000000,
+    "exitepoch": 9223372036854776000,
+    "lastattestationslot": 8036647,
+    "name": "",
+    "pubkey": "0xab2e323ad2f0ecd60a93a29c4ced29a72f333217ecb152cdc9673c52f7e5caf8b45e907a13a7803b184d35e3d7ed1f2e",
+    "slashed": false,
+    "status": "active_online",
+    "validatorindex": 123,
+    "withdrawableepoch": 9223372036854776000,
+    "withdrawalcredentials": "0x01000000000000000000000007982d9ece6ff05d7eaf38f3431a330d2f4a5233",
+    "total_withdrawals": 5228084400
+  }
